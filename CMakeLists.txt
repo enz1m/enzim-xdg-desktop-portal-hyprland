@@ -66,7 +66,9 @@ pkg_check_modules(
   gbm
   hyprlang>=0.2.0
   hyprutils>=0.2.6
-  hyprwayland-scanner>=0.4.2)
+  hyprwayland-scanner>=0.4.2
+  xkbcommon
+  libeis-1.0)
 
 # check whether we can find sdbus-c++ through pkg-config
 pkg_check_modules(SDBUS IMPORTED_TARGET sdbus-c++>=2.0.0)
@@ -85,7 +87,11 @@ else()
 endif()
 
 file(GLOB_RECURSE SRCFILES CONFIGURE_DEPENDS "src/*.cpp")
-add_executable(xdg-desktop-portal-hyprland ${SRCFILES})
+# enzUI: plain wayland-scanner bindings for RemoteDesktop's virtual input,
+# generated into src/enzui-protocols before configuring.
+file(GLOB ENZUI_PROTOCOL_SOURCES CONFIGURE_DEPENDS "src/enzui-protocols/*.c")
+include_directories("src/enzui-protocols/")
+add_executable(xdg-desktop-portal-hyprland ${SRCFILES} ${ENZUI_PROTOCOL_SOURCES})
 target_link_libraries(
   xdg-desktop-portal-hyprland PRIVATE rt PkgConfig::SDBUS Threads::Threads
                                       PkgConfig::deps)

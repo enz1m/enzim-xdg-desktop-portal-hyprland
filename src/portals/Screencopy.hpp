@@ -56,6 +56,7 @@ class CPipewireConnection;
 class CScreencopyPortal {
   public:
     CScreencopyPortal(SP<CCZwlrScreencopyManagerV1>);
+    void shutdown();
 
     void   appendToplevelExport(SP<CCHyprlandToplevelExportManagerV1>);
 
@@ -117,12 +118,14 @@ class CScreencopyPortal {
 
     std::unique_ptr<CPipewireConnection> m_pPipewire;
 
+    // enzUI: RemoteDesktop shares these sessions.
+    SSession* getSession(sdbus::ObjectPath& path);
+
   private:
     std::unique_ptr<sdbus::IObject>                          m_pObject;
 
     std::vector<Hyprutils::Memory::CUniquePointer<SSession>> m_vSessions;
 
-    SSession*                                                getSession(sdbus::ObjectPath& path);
     void                                                     startSharing(SSession* pSession);
 
     struct {

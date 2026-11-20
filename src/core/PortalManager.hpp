@@ -9,6 +9,7 @@
 #include "../portals/Screenshot.hpp"
 #include "../portals/GlobalShortcuts.hpp"
 #include "../portals/InputCapture.hpp"
+#include "../portals/RemoteDesktop.hpp"
 #include "../helpers/Timer.hpp"
 #include "../shared/ToplevelManager.hpp"
 #include "../shared/ToplevelMappingManager.hpp"
@@ -28,6 +29,9 @@
 #include <mutex>
 
 struct pw_loop;
+struct wl_seat;
+struct zwlr_virtual_pointer_manager_v1;
+struct zwp_virtual_keyboard_manager_v1;
 
 class CCZxdgOutputManagerV1;
 class CCZxdgOutputV1;
@@ -80,6 +84,7 @@ class CPortalManager {
         std::unique_ptr<CScreenshotPortal>      screenshot;
         std::unique_ptr<CGlobalShortcutsPortal> globalShortcuts;
         std::unique_ptr<CInputCapturePortal>    inputCapture;
+        std::unique_ptr<CRemoteDesktopPortal>   remoteDesktop;
     } m_sPortals;
 
     struct {
@@ -95,6 +100,11 @@ class CPortalManager {
         SP<CCZwpLinuxDmabufFeedbackV1>        linuxDmabufFeedback;
         SP<CCZxdgOutputManagerV1>             xdgOutputManager;
         SP<CCWlShm>                           shm;
+        // enzUI: RemoteDesktop input.
+        zwlr_virtual_pointer_manager_v1*      enzuiVirtualPointer        = nullptr;
+        uint32_t                              enzuiVirtualPointerVersion = 0;
+        zwp_virtual_keyboard_manager_v1*      enzuiVirtualKeyboard       = nullptr;
+        wl_seat*                              enzuiSeat                  = nullptr;
         gbm_bo*                               gbm       = nullptr;
         gbm_device*                           gbmDevice = nullptr;
         struct {
@@ -125,7 +135,7 @@ class CPortalManager {
     void  startEventLoop();
     void  setupXDGOutput(SOutput* output);
 
-    bool  m_bTerminate = false;
+    std::atomic<bool> m_bTerminate = false;
     pid_t m_iPID       = 0;
 
     struct {
@@ -140,7 +150,7 @@ class CPortalManager {
     struct {
         std::condition_variable              loopSignal;
         std::mutex                           loopMutex;
-        bool                                 shouldProcess = false;
+        std::atomic<bool>                     shouldProcess = false;
         std::vector<std::unique_ptr<CTimer>> timers;
         std::unique_ptr<std::thread>         thread;
     } m_sTimersThread;

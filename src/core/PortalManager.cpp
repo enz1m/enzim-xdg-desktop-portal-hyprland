@@ -1,7 +1,12 @@
 #include "PortalManager.hpp"
+#include <cstdio>
+#include <cstdlib>
 #include "../helpers/Log.hpp"
 #include "../helpers/MiscFunctions.hpp"
 #include "xdg-output-unstable-v1.hpp"
+#include "../portals/RemoteDesktop.hpp"
+#include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
+#include "virtual-keyboard-unstable-v1-client-protocol.h"
 
 #include <pipewire/pipewire.h>
 #include <sys/mman.h>
@@ -89,6 +94,17 @@ void CPortalManager::onGlobal(uint32_t name, const char* interface, uint32_t ver
     if (INTERFACE == zwlr_screencopy_manager_v1_interface.name && m_sPipewire.loop) {
         m_sPortals.screencopy = std::make_unique<CScreencopyPortal>(makeShared<CCZwlrScreencopyManagerV1>(
             (wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &zwlr_screencopy_manager_v1_interface, version)));
+    }
+
+    if (INTERFACE == zwlr_virtual_pointer_manager_v1_interface.name) {
+        m_sWaylandConnection.enzuiVirtualPointerVersion = std::min(version, 2u);
+        m_sWaylandConnection.enzuiVirtualPointer        = (zwlr_virtual_pointer_manager_v1*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name,
+                                                                                                         &zwlr_virtual_pointer_manager_v1_interface, std::min(version, 2u));
+    } else if (INTERFACE == zwp_virtual_keyboard_manager_v1_interface.name) {
+        m_sWaylandConnection.enzuiVirtualKeyboard =
+            (zwp_virtual_keyboard_manager_v1*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &zwp_virtual_keyboard_manager_v1_interface, 1);
+    } else if (INTERFACE == wl_seat_interface.name && !m_sWaylandConnection.enzuiSeat) {
+        m_sWaylandConnection.enzuiSeat = (wl_seat*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &wl_seat_interface, 1);
     }
 
     if (INTERFACE == hyprland_global_shortcuts_manager_v1_interface.name) {
@@ -267,7 +283,10 @@ void CPortalManager::init() {
     m_iPID = getpid();
 
     try {
-        m_pConnection = sdbus::createSessionBusConnection(sdbus::ServiceName{"org.freedesktop.impl.portal.desktop.hyprland"});
+        // enzUI: a build that adds RemoteDesktop runs beside the system's
+        // own xdph under the name its portal file gives.
+        const char* busName = getenv("XDPH_BUS_NAME");
+        m_pConnection       = sdbus::createSessionBusConnection(sdbus::ServiceName{busName && *busName ? busName : "org.freedesktop.impl.portal.desktop.hyprland"});
     } catch (std::exception& e) {
         Debug::log(CRIT, "Couldn't create the dbus connection ({})", e.what());
         exit(1);
@@ -312,10 +331,22 @@ void CPortalManager::init() {
     // globals, such as xdg_output, receive their initial state.
     wl_display_roundtrip(m_sWaylandConnection.display);
 
+    if (!m_sPortals.screencopy && getenv("XDPH_BUS_NAME")) {
+        // enzUI: this instance exists only to share the screen. Started while
+        // the screen is locked, the compositor admits nothing; exit so the
+        // next request after unlocking starts one that can.
+        Debug::log(CRIT, "Screencopy unavailable (screen locked or capture not admitted), exiting");
+        // Not exit(): static destructors would run beside live threads.
+        std::fflush(nullptr);
+        std::_Exit(1);
+    }
     if (!m_sPortals.screencopy)
         Debug::log(WARN, "Screencopy not started: compositor doesn't support zwlr_screencopy_v1 or pw refused a loop");
     else if (m_sWaylandConnection.hyprlandToplevelMgr)
         m_sPortals.screencopy->appendToplevelExport(m_sWaylandConnection.hyprlandToplevelMgr);
+
+    if (const char* busName = getenv("XDPH_BUS_NAME"); m_sPortals.screencopy && busName && *busName)
+        m_sPortals.remoteDesktop = std::make_unique<CRemoteDesktopPortal>(); // enzUI: only under its own name
 
     if (!inShellPath("grim"))
         Debug::log(WARN, "grim not found. Screenshots will not work.");
@@ -340,6 +371,8 @@ void CPortalManager::startEventLoop() {
     addFdToEventLoop(m_pConnection->getEventLoopPollData().fd, POLLIN, nullptr);
     addFdToEventLoop(wl_display_get_fd(m_sWaylandConnection.display), POLLIN, nullptr);
     addFdToEventLoop(pw_loop_get_fd(m_sPipewire.loop), POLLIN, nullptr);
+    if (m_sPortals.remoteDesktop)
+        m_sPortals.remoteDesktop->attachEventLoop();
 
     std::thread pollThr([this]() {
         while (1) {
@@ -351,7 +384,9 @@ void CPortalManager::startEventLoop() {
             }
 
             for (size_t i = 0; i < 3; ++i) {
-                if (m_sEventLoopInternals.pollFds.data()->revents & POLLHUP) {
+                // enzUI: each fd, not only D-Bus's; the compositor revokes this
+                // portal's Wayland connection when the screen locks.
+                if (m_sEventLoopInternals.pollFds[i].revents & (POLLHUP | POLLERR)) {
                     Debug::log(CRIT, "[core] Disconnected from pollfd id {}", i);
                     g_pPortalManager->terminate();
                 }
@@ -383,7 +418,7 @@ void CPortalManager::startEventLoop() {
             }
             m_mEventLock.unlock();
 
-            m_sTimersThread.loopSignal.wait_for(lk, std::chrono::milliseconds((int)nearest), [this] { return m_sTimersThread.shouldProcess; });
+            m_sTimersThread.loopSignal.wait_for(lk, std::chrono::milliseconds((int)nearest), [this] { return m_sTimersThread.shouldProcess.load(); });
             m_sTimersThread.shouldProcess = false;
 
             if (m_bTerminate)
@@ -467,6 +502,13 @@ void CPortalManager::startEventLoop() {
             wl_display_flush(m_sWaylandConnection.display);
         } while (ret > 0);
 
+        if (const int error = wl_display_get_error(m_sWaylandConnection.display); error != 0 && !m_bTerminate) {
+            // enzUI: without its compositor connection this portal would hand
+            // out dead streams and devices; exit so D-Bus starts a fresh one.
+            Debug::log(CRIT, "[core] Wayland connection lost ({}), exiting", strerror(error));
+            terminate();
+        }
+
         if (!toRemove.empty())
             std::erase_if(m_sTimersThread.timers,
                           [&](const auto& t) { return std::find_if(toRemove.begin(), toRemove.end(), [&](const auto& other) { return other == t.get(); }) != toRemove.end(); });
@@ -476,18 +518,48 @@ void CPortalManager::startEventLoop() {
 
     Debug::log(ERR, "[core] Terminated");
 
+    // Stop callbacks before releasing portals, their timers or connection fds.
+    pollThr.join();
+    if (m_sTimersThread.thread && m_sTimersThread.thread->joinable())
+        m_sTimersThread.thread->join();
+    m_sTimersThread.thread.reset();
+
     m_sPortals.globalShortcuts.reset();
+    m_sPortals.remoteDesktop.reset();
+    if (m_sPortals.screencopy)
+        m_sPortals.screencopy->shutdown();
     m_sPortals.screencopy.reset();
     m_sPortals.screenshot.reset();
     m_sHelpers.toplevel.reset();
+    m_sHelpers.toplevelMapping.reset();
     m_sPortals.inputCapture.reset();
+    m_sTimersThread.timers.clear();
+    m_sEventLoopInternals.pollCallbacks.clear();
+    m_sEventLoopInternals.pollFds.clear();
+
+    // Protocol destructors marshal destroy requests and need a live display object.
+    m_vOutputs.clear();
+    m_sWaylandConnection.linuxDmabufFeedback.reset();
+    m_sWaylandConnection.linuxDmabuf.reset();
+    m_sWaylandConnection.hyprlandToplevelMgr.reset();
+    m_sWaylandConnection.xdgOutputManager.reset();
+    m_sWaylandConnection.shm.reset();
+    m_sWaylandConnection.registry.reset();
+    if (m_sWaylandConnection.enzuiVirtualPointer)
+        zwlr_virtual_pointer_manager_v1_destroy(m_sWaylandConnection.enzuiVirtualPointer);
+    if (m_sWaylandConnection.enzuiVirtualKeyboard)
+        zwp_virtual_keyboard_manager_v1_destroy(m_sWaylandConnection.enzuiVirtualKeyboard);
+    if (m_sWaylandConnection.enzuiSeat)
+        wl_seat_destroy(m_sWaylandConnection.enzuiSeat);
+    m_sWaylandConnection.enzuiVirtualPointer = nullptr;
+    m_sWaylandConnection.enzuiVirtualKeyboard = nullptr;
+    m_sWaylandConnection.enzuiSeat = nullptr;
 
     m_pConnection.reset();
     pw_loop_destroy(m_sPipewire.loop);
     wl_display_disconnect(m_sWaylandConnection.display);
 
-    m_sTimersThread.thread.release();
-    pollThr.join(); // wait for poll to exit
+    m_sWaylandConnection.display = nullptr;
 }
 
 sdbus::IConnection* CPortalManager::getConnection() {
@@ -570,12 +642,8 @@ void CPortalManager::removeFdFromEventLoop(int fd) {
 }
 
 void CPortalManager::terminate() {
-    m_bTerminate = true;
-
-    // if we don't exit in 5s, we'll kill by force. Nuclear option. PIDs are not reused in linux until a wrap-around,
-    // and I doubt anyone will make 4.2M PIDs within 5s.
-    if (fork() == 0)
-        execl("/bin/sh", "/bin/sh", "-c", std::format("sleep 5 && kill -9 {}", m_iPID).c_str(), nullptr);
+    if (m_bTerminate.exchange(true))
+        return;
 
     {
         m_sEventLoopInternals.shouldProcess = true;

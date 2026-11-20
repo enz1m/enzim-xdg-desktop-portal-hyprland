@@ -668,6 +668,19 @@ CScreencopyPortal::CScreencopyPortal(SP<CCZwlrScreencopyManagerV1> mgr) {
     Debug::log(LOG, "[screencopy] init successful");
 }
 
+void CScreencopyPortal::shutdown() {
+    if (!m_pPipewire)
+        return;
+
+    // PipeWire teardown invokes callbacks that require this portal and its sessions.
+    for (auto& session : m_vSessions) {
+        m_pPipewire->removeSessionFrameCallbacks(session.get());
+        m_pPipewire->destroyStream(session.get());
+    }
+    m_pPipewire.reset();
+    m_vSessions.clear();
+}
+
 void CScreencopyPortal::appendToplevelExport(SP<CCHyprlandToplevelExportManagerV1> proto) {
     m_sState.toplevel = proto;
 
