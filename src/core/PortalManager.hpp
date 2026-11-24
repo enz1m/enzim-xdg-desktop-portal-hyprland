@@ -72,6 +72,12 @@ class CPortalManager {
     void                                         onGlobalRemoved(uint32_t name);
 
     sdbus::IConnection*                          getConnection();
+    // The unique bus name of the peer whose method call is being handled.
+    std::string caller();
+    // The impl.portal interfaces serve only the xdg-desktop-portal frontend:
+    // throws AccessDenied unless the caller currently owns its bus name, and
+    // returns the caller's unique name otherwise.
+    std::string                                  requireFrontend();
     SOutput*                                     getOutputFromName(const std::string& name);
     std::vector<std::unique_ptr<SOutput>> const& getAllOutputs();
 

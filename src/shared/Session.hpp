@@ -7,12 +7,15 @@
 struct SDBusSession {
     std::unique_ptr<sdbus::IObject> object;
     sdbus::ObjectPath               handle;
+    // The frontend connection that created it; only it may drive or close it.
+    std::string                     owner;
     std::function<void()>           onDestroy;
 };
 
 struct SDBusRequest {
     std::unique_ptr<sdbus::IObject> object;
     sdbus::ObjectPath               handle;
+    std::string                     owner;
     std::function<void()>           onDestroy;
 };
 

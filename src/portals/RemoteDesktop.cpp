@@ -178,7 +178,7 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
 
 dbUasv CRemoteDesktopPortal::onSelectDevices(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID,
                                              std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto it = m_sessions.find(sessionHandle);
+    const auto it = callerSession(sessionHandle);
     if (it == m_sessions.end() || it->second.started)
         return {1, {}};
     uint32_t types = DEVICE_KEYBOARD | DEVICE_POINTER;
@@ -190,7 +190,7 @@ dbUasv CRemoteDesktopPortal::onSelectDevices(sdbus::ObjectPath requestHandle, sd
 
 dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID, std::string parentWindow,
                                      std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto it = m_sessions.find(sessionHandle);
+    const auto it         = callerSession(sessionHandle);
     auto&      screencopy = g_pPortalManager->m_sPortals.screencopy;
     if (it == m_sessions.end() || it->second.started || !screencopy)
         return {1, {}};
@@ -221,7 +221,7 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
 }
 
 sdbus::UnixFd CRemoteDesktopPortal::onConnectToEIS(sdbus::ObjectPath sessionHandle, std::string appID, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto it = m_sessions.find(sessionHandle);
+    const auto it = callerSession(sessionHandle);
     if (it == m_sessions.end() || !it->second.started)
         throw failure("No started remote desktop session");
     auto& session = it->second;
@@ -280,11 +280,18 @@ CRemoteDesktopPortal::SSession* CRemoteDesktopPortal::active(const std::string& 
     return &it->second;
 }
 
+std::unordered_map<std::string, CRemoteDesktopPortal::SSession>::iterator CRemoteDesktopPortal::callerSession(sdbus::ObjectPath sessionHandle) {
+    auto& screencopy = g_pPortalManager->m_sPortals.screencopy;
+    if (!screencopy || !screencopy->callerSession(sessionHandle))
+        return m_sessions.end();
+    return m_sessions.find(sessionHandle);
+}
+
 CRemoteDesktopPortal::SSession* CRemoteDesktopPortal::notifiable(const std::string& sessionHandle, uint32_t device) {
     // A session's input comes either through Notify or through its EIS
     // connection, never both.
-    const auto it = m_sessions.find(sessionHandle);
-    if (it != m_sessions.end() && it->second.eisContext)
+    const auto it = callerSession(sdbus::ObjectPath{sessionHandle});
+    if (it == m_sessions.end() || it->second.eisContext)
         return nullptr;
     return active(sessionHandle, device);
 }

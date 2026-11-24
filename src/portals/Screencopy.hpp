@@ -11,6 +11,7 @@
 #include "../shared/Session.hpp"
 #include "../dbusDefines.hpp"
 #include <chrono>
+#include <optional>
 
 enum cursorModes {
     HIDDEN   = 1,
@@ -120,8 +121,23 @@ class CScreencopyPortal {
 
     // enzUI: RemoteDesktop shares these sessions.
     SSession* getSession(sdbus::ObjectPath& path);
+    // The session, when the method call being handled comes from its creator.
+    SSession* callerSession(sdbus::ObjectPath& path);
 
   private:
+    struct SRestoreGrant {
+        std::string token, appID, output, windowClass;
+        uint64_t    windowHandle = 0;
+        bool        withCursor   = false;
+        struct {
+            uint32_t x = 0, y = 0, w = 0, h = 0;
+        } geometry;
+    };
+
+    sdbus::Struct<std::string, uint32_t, sdbus::Variant>     issueRestoreData(const SSession& session);
+    std::optional<SRestoreGrant>                             redeemRestoreToken(const std::string& token, const std::string& appID);
+
+    std::vector<SRestoreGrant>                               m_vRestoreGrants;
     std::unique_ptr<sdbus::IObject>                          m_pObject;
 
     std::vector<Hyprutils::Memory::CUniquePointer<SSession>> m_vSessions;

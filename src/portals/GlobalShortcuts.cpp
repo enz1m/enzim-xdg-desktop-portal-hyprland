@@ -67,6 +67,7 @@ SKeybind* CGlobalShortcutsPortal::registerShortcut(SSession* session, const DBus
 
 dbUasv CGlobalShortcutsPortal::onCreateSession(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID,
                                                std::unordered_map<std::string, sdbus::Variant> opts) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[globalshortcuts] New session:");
     Debug::log(LOG, "[globalshortcuts]  | {}", requestHandle.c_str());
     Debug::log(LOG, "[globalshortcuts]  | {}", sessionHandle.c_str());
@@ -99,6 +100,7 @@ dbUasv CGlobalShortcutsPortal::onCreateSession(sdbus::ObjectPath requestHandle, 
 
 dbUasv CGlobalShortcutsPortal::onBindShortcuts(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::vector<DBusShortcut> shortcuts, std::string appID,
                                                std::unordered_map<std::string, sdbus::Variant> opts) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[globalshortcuts] Bind keys:");
     Debug::log(LOG, "[globalshortcuts]  | {}", sessionHandle.c_str());
 
@@ -131,6 +133,7 @@ dbUasv CGlobalShortcutsPortal::onBindShortcuts(sdbus::ObjectPath requestHandle, 
 }
 
 dbUasv CGlobalShortcutsPortal::onListShortcuts(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[globalshortcuts] List keys:");
     Debug::log(LOG, "[globalshortcuts]  | {}", sessionHandle.c_str());
 

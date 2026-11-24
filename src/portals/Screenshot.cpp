@@ -109,6 +109,7 @@ CScreenshotPortal::CScreenshotPortal() {
 }
 
 dbUasv CScreenshotPortal::onScreenshot(sdbus::ObjectPath requestHandle, std::string appID, std::string parentWindow, std::unordered_map<std::string, sdbus::Variant> options) {
+    g_pPortalManager->requireFrontend();
 
     Debug::log(LOG, "[screenshot] New screenshot request:");
     Debug::log(LOG, "[screenshot]  | {}", requestHandle.c_str());
@@ -149,6 +150,7 @@ dbUasv CScreenshotPortal::onScreenshot(sdbus::ObjectPath requestHandle, std::str
 }
 
 dbUasv CScreenshotPortal::onPickColor(sdbus::ObjectPath requestHandle, std::string appID, std::string parentWindow, std::unordered_map<std::string, sdbus::Variant> options) {
+    g_pPortalManager->requireFrontend();
 
     Debug::log(LOG, "[screenshot] New PickColor request:");
     Debug::log(LOG, "[screenshot]  | {}", requestHandle.c_str());

@@ -240,6 +240,7 @@ void complete(sdbus::MethodCall& call) {
 
 dbUasv CInputCapturePortal::onCreateSession(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID, std::string parentWindow,
                                             std::unordered_map<std::string, sdbus::Variant> options) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[input-capture] New session:");
 
     uint32_t capabilities = 0;
@@ -296,6 +297,7 @@ CInputCapturePortal::SSession::SSession(sdbus::ObjectPath requestHandle_, sdbus:
 }
 
 dbUasv CInputCapturePortal::onGetZones(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID, std::unordered_map<std::string, sdbus::Variant> opts) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[input-capture] New GetZones request:");
     Debug::log(LOG, "[input-capture]  | {}", requestHandle.c_str());
     Debug::log(LOG, "[input-capture]  | {}", sessionHandle.c_str());
@@ -323,6 +325,7 @@ dbUasv CInputCapturePortal::onGetZones(sdbus::ObjectPath requestHandle, sdbus::O
 dbUasv CInputCapturePortal::onSetPointerBarriers(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID,
                                                  std::unordered_map<std::string, sdbus::Variant> opts, std::vector<std::unordered_map<std::string, sdbus::Variant>> barriers,
                                                  uint32_t zoneSet) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[input-capture] New SetPointerBarriers request:");
 
     Debug::log(LOG, "[input-capture]  | {}", requestHandle.c_str());
@@ -415,6 +418,7 @@ dbUasv CInputCapturePortal::onSetPointerBarriers(sdbus::ObjectPath requestHandle
 }
 
 dbUasv CInputCapturePortal::onDisable(sdbus::ObjectPath sessionHandle, std::string appID, std::unordered_map<std::string, sdbus::Variant> opts) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[input-capture] New Disable request:");
     Debug::log(LOG, "[input-capture]  | {}", sessionHandle.c_str());
     Debug::log(LOG, "[input-capture]  | appid: {}", appID);
@@ -427,6 +431,7 @@ dbUasv CInputCapturePortal::onDisable(sdbus::ObjectPath sessionHandle, std::stri
 }
 
 dbUasv CInputCapturePortal::onEnable(sdbus::ObjectPath sessionHandle, std::string appID, std::unordered_map<std::string, sdbus::Variant> opts) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[input-capture] New Enable request:");
     Debug::log(LOG, "[input-capture]  | {}", sessionHandle.c_str());
     Debug::log(LOG, "[input-capture]  | appid: {}", appID);
@@ -441,6 +446,7 @@ dbUasv CInputCapturePortal::onEnable(sdbus::ObjectPath sessionHandle, std::strin
 }
 
 dbUasv CInputCapturePortal::onRelease(sdbus::ObjectPath sessionHandle, std::string appID, std::unordered_map<std::string, sdbus::Variant> opts) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[input-capture] New Release request:");
     Debug::log(LOG, "[input-capture]  | {}", sessionHandle.c_str());
     Debug::log(LOG, "[input-capture]  | appid: {}", appID);
@@ -478,6 +484,7 @@ dbUasv CInputCapturePortal::onRelease(sdbus::ObjectPath sessionHandle, std::stri
 }
 
 sdbus::UnixFd CInputCapturePortal::onConnectToEIS(sdbus::ObjectPath sessionHandle, std::string appID, std::unordered_map<std::string, sdbus::Variant> opts) {
+    g_pPortalManager->requireFrontend();
     Debug::log(LOG, "[input-capture] New ConnectToEIS request:");
     Debug::log(LOG, "[input-capture]  | {}", sessionHandle.c_str());
     Debug::log(LOG, "[input-capture]  | appid: {}", appID);

@@ -566,6 +566,26 @@ sdbus::IConnection* CPortalManager::getConnection() {
     return m_pConnection.get();
 }
 
+std::string CPortalManager::caller() {
+    const char* sender = m_pConnection->getCurrentlyProcessedMessage().getSender();
+    return sender ? sender : "";
+}
+
+std::string CPortalManager::requireFrontend() {
+    const auto  sender = caller();
+    std::string owner;
+    try {
+        auto bus = sdbus::createProxy(*m_pConnection, sdbus::ServiceName{"org.freedesktop.DBus"}, sdbus::ObjectPath{"/org/freedesktop/DBus"});
+        bus->callMethod("GetNameOwner").onInterface("org.freedesktop.DBus").withArguments(std::string{"org.freedesktop.portal.Desktop"}).storeResultsTo(owner);
+    } catch (std::exception& e) { Debug::log(ERR, "[core] portal frontend owner unknown: {}", e.what()); }
+
+    if (sender.empty() || sender != owner) {
+        Debug::log(WARN, "[core] refused a call from {}: not the portal frontend", sender);
+        throw sdbus::Error{sdbus::Error::Name{"org.freedesktop.DBus.Error.AccessDenied"}, "Only the portal frontend may call this backend"};
+    }
+    return sender;
+}
+
 SOutput* CPortalManager::getOutputFromName(const std::string& name) {
     for (auto& o : m_vOutputs) {
         if (o->name == name)

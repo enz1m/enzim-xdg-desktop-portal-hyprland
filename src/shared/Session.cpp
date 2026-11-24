@@ -2,11 +2,18 @@
 #include "../core/PortalManager.hpp"
 #include "../helpers/Log.hpp"
 
+static void requireOwner(const std::string& owner) {
+    if (g_pPortalManager->caller() != owner)
+        throw sdbus::Error{sdbus::Error::Name{"org.freedesktop.DBus.Error.AccessDenied"}, "Not the creator of this object"};
+}
+
 static int onCloseRequest(SDBusRequest* req) {
     Debug::log(TRACE, "[internal] Close Request {}", (void*)req);
 
     if (!req)
         return 0;
+
+    requireOwner(req->owner);
 
     req->onDestroy();
     req->object.release();
@@ -19,6 +26,8 @@ static int onCloseSession(SDBusSession* sess) {
 
     if (!sess)
         return 0;
+
+    requireOwner(sess->owner);
 
     auto destroy = std::move(sess->onDestroy);
     g_pPortalManager->addTimer({0, [sess, destroy]() {
@@ -35,6 +44,7 @@ std::unique_ptr<SDBusSession> createDBusSession(sdbus::ObjectPath handle) {
 
     std::unique_ptr<SDBusSession> pSession = std::make_unique<SDBusSession>();
     const auto                    PSESSION = pSession.get();
+    pSession->owner                        = g_pPortalManager->caller();
 
     pSession->object = sdbus::createObject(*g_pPortalManager->getConnection(), handle);
 
@@ -48,6 +58,7 @@ std::unique_ptr<SDBusRequest> createDBusRequest(sdbus::ObjectPath handle) {
 
     std::unique_ptr<SDBusRequest> pRequest = std::make_unique<SDBusRequest>();
     const auto                    PREQUEST = pRequest.get();
+    pRequest->owner                        = g_pPortalManager->caller();
 
     pRequest->object = sdbus::createObject(*g_pPortalManager->getConnection(), handle);
 

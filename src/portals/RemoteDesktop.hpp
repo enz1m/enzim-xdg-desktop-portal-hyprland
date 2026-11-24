@@ -63,6 +63,8 @@ class CRemoteDesktopPortal {
                       std::unordered_map<std::string, sdbus::Variant> opts);
     sdbus::UnixFd onConnectToEIS(sdbus::ObjectPath sessionHandle, std::string appID, std::unordered_map<std::string, sdbus::Variant> opts);
 
+    // The session, when the method call being handled comes from its creator.
+    std::unordered_map<std::string, SSession>::iterator callerSession(sdbus::ObjectPath sessionHandle);
     SSession* active(const std::string& sessionHandle, uint32_t device);
     SSession* notifiable(const std::string& sessionHandle, uint32_t device);
     bool      askControl(const std::string& appID, uint32_t devices);
