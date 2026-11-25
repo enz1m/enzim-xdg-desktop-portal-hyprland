@@ -39,6 +39,9 @@ class CCZxdgOutputV1;
 struct SOutput {
     SOutput(SP<CCWlOutput>);
     std::string         name;
+    // The monitor's make, model and serial as the compositor describes it.
+    std::string         identity;
+    std::string         description, makeModel;
     SP<CCWlOutput>      output               = nullptr;
     SP<CCZxdgOutputV1>  xdgOutput            = nullptr;
     uint32_t            id                   = 0;

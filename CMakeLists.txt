@@ -96,6 +96,13 @@ target_link_libraries(
   xdg-desktop-portal-hyprland PRIVATE rt PkgConfig::SDBUS Threads::Threads
                                       PkgConfig::deps)
 
+option(XDPH_TESTS "Build the unit tests" OFF)
+if(XDPH_TESTS)
+  enable_testing()
+  add_executable(grant-store-test tests/GrantStore.cpp src/shared/GrantStore.cpp)
+  add_test(NAME grant-store COMMAND grant-store-test)
+endif()
+
 # protocols
 pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
 message(STATUS "Found wayland-protocols at ${WAYLAND_PROTOCOLS_DIR}")

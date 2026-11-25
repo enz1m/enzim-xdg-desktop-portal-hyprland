@@ -259,14 +259,31 @@
          <enum>Qt::ClickFocus</enum>
         </property>
         <property name="toolTip">
-         <string>By selecting this, the application will be given a restore token that it can use to skip prompting you next time. 
+         <string>The application can share the same source again without asking until you sign out or the portal restarts.
 Only select if you trust the application.</string>
         </property>
         <property name="layoutDirection">
          <enum>Qt::LeftToRight</enum>
         </property>
         <property name="text">
-         <string>Allow a restore token</string>
+         <string>Remember for this session</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="persistCheckBox">
+        <property name="focusPolicy">
+         <enum>Qt::ClickFocus</enum>
+        </property>
+        <property name="toolTip">
+         <string>The application can share the same screen or region again without asking, also after a restart.
+Windows are remembered only for this session. Revoke it in Settings, Apps, Screen sharing.</string>
+        </property>
+        <property name="layoutDirection">
+         <enum>Qt::LeftToRight</enum>
+        </property>
+        <property name="text">
+         <string>Allow after restart</string>
         </property>
        </widget>
       </item>

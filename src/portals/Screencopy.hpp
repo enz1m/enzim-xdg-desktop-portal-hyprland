@@ -9,6 +9,7 @@
 #include "../shared/ScreencopyShared.hpp"
 #include <gbm.h>
 #include "../shared/Session.hpp"
+#include "../shared/GrantStore.hpp"
 #include "../dbusDefines.hpp"
 #include <chrono>
 #include <optional>
@@ -71,6 +72,12 @@ class CScreencopyPortal {
         sdbus::ObjectPath                         requestHandle, sessionHandle;
         uint32_t                                  cursorMode  = HIDDEN;
         uint32_t                                  persistMode = 0;
+        // Redeemed from SelectDevices for a remote-desktop session.
+        std::optional<SScreencastGrant>           pendingRestore;
+        // The grant this session was started from, if any.
+        std::optional<SScreencastGrant>           restoredGrant;
+        // Remote-desktop devices to remember with a persistent grant.
+        uint32_t                                  grantDevices = 0;
 
         std::unique_ptr<SDBusRequest>             request;
         std::unique_ptr<SDBusSession>             session;
@@ -124,20 +131,14 @@ class CScreencopyPortal {
     // The session, when the method call being handled comes from its creator.
     SSession* callerSession(sdbus::ObjectPath& path);
 
+    // Redeems a token this backend issued to appID; anything else is ignored.
+    std::optional<SScreencastGrant> redeemRestoreData(const sdbus::Variant& restoreData, const std::string& appID);
+
   private:
-    struct SRestoreGrant {
-        std::string token, appID, output, windowClass;
-        uint64_t    windowHandle = 0;
-        bool        withCursor   = false;
-        struct {
-            uint32_t x = 0, y = 0, w = 0, h = 0;
-        } geometry;
-    };
+    sdbus::Struct<std::string, uint32_t, sdbus::Variant> issueRestoreData(SSession& session);
+    bool                                                 grantStillMatches(const SScreencastGrant& grant);
 
-    sdbus::Struct<std::string, uint32_t, sdbus::Variant>     issueRestoreData(const SSession& session);
-    std::optional<SRestoreGrant>                             redeemRestoreToken(const std::string& token, const std::string& appID);
-
-    std::vector<SRestoreGrant>                               m_vRestoreGrants;
+    CGrantStore                                          m_grants{CGrantStore::defaultPath()};
     std::unique_ptr<sdbus::IObject>                          m_pObject;
 
     std::vector<Hyprutils::Memory::CUniquePointer<SSession>> m_vSessions;

@@ -106,6 +106,22 @@ int main(int argc, char* argv[]) {
     if (allowTokenByDefault)
         ALLOWTOKENBUTTON->setCheckState(Qt::CheckState::Checked);
 
+    // xdph offers persistence only when the app asked for it and has an app id.
+    const auto  PERSISTBUTTON = w.findChild<QCheckBox*>("persistCheckBox");
+    const char* OFFERPERSIST  = getenv("XDPH_OFFER_PERSIST");
+    const bool  OFFERED       = OFFERPERSIST && std::string{OFFERPERSIST} == "1";
+    PERSISTBUTTON->setVisible(OFFERED);
+    QObject::connect(PERSISTBUTTON, &QCheckBox::toggled, [=](bool checked) {
+        if (checked)
+            ALLOWTOKENBUTTON->setChecked(true);
+        ALLOWTOKENBUTTON->setEnabled(!checked);
+    });
+    const auto FLAGS = [=](bool persistable) {
+        if (persistable && OFFERED && PERSISTBUTTON->isChecked())
+            return std::string{"rp"};
+        return std::string{ALLOWTOKENBUTTON->isChecked() ? "r" : ""};
+    };
+
     const auto TAB1 = (QWidget*)TABWIDGET->children()[0];
 
     const auto SCREENS_SCROLL_AREA_CONTENTS =
@@ -131,7 +147,7 @@ int main(int argc, char* argv[]) {
 
         QObject::connect(button, &QPushButton::clicked, [=]() {
             std::cout << "[SELECTION]";
-            std::cout << (ALLOWTOKENBUTTON->isChecked() ? "r" : "");
+            std::cout << FLAGS(true);
             std::cout << "/";
 
             std::cout << "screen:" << outputName.toStdString() << "\n";
@@ -167,7 +183,7 @@ int main(int argc, char* argv[]) {
 
         QObject::connect(button, &QPushButton::clicked, [=]() {
             std::cout << "[SELECTION]";
-            std::cout << (ALLOWTOKENBUTTON->isChecked() ? "r" : "");
+            std::cout << FLAGS(false);
             std::cout << "/";
 
             std::cout << "window:" << mainPickerPtr->windowIDs[button] << "\n";
@@ -234,7 +250,7 @@ int main(int argc, char* argv[]) {
             const auto H = std::stoi(REGION);
 
             std::cout << "[SELECTION]";
-            std::cout << (ALLOWTOKENBUTTON->isChecked() ? "r" : "");
+            std::cout << FLAGS(true);
             std::cout << "/";
 
             std::cout << "region:" << SCREEN_NAME << "@" << X - pScreen->geometry().x() << "," << Y - pScreen->geometry().y() << "," << W << "," << H << "\n";

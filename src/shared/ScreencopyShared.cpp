@@ -39,7 +39,7 @@ std::string buildWindowList() {
     return result;
 }
 
-SSelectionData promptForScreencopySelection() {
+SSelectionData promptForScreencopySelection(bool offerPersist) {
     SSelectionData      data;
 
     const char*         WAYLAND_DISPLAY             = getenv("WAYLAND_DISPLAY");
@@ -59,7 +59,9 @@ SSelectionData promptForScreencopySelection() {
     proc.addEnv("QT_QPA_PLATFORM", "wayland");
     proc.addEnv("XCURSOR_SIZE", XCURSOR_SIZE ? XCURSOR_SIZE : "24");
     proc.addEnv("HYPRLAND_INSTANCE_SIGNATURE", HYPRLAND_INSTANCE_SIGNATURE ? HYPRLAND_INSTANCE_SIGNATURE : "0");
-    proc.addEnv("XDPH_WINDOW_SHARING_LIST", buildWindowList()); // buildWindowList will sanitize any shell stuff in case the picker (qt) does something funky? It shouldn't.
+    proc.addEnv("XDPH_WINDOW_SHARING_LIST", buildWindowList());
+    if (offerPersist)
+        proc.addEnv("XDPH_OFFER_PERSIST", "1"); // buildWindowList will sanitize any shell stuff in case the picker (qt) does something funky? It shouldn't.
 
     if (!proc.runSync())
         return data;
@@ -89,6 +91,8 @@ SSelectionData promptForScreencopySelection() {
     for (auto& flag : FLAGS) {
         if (flag == 'r')
             data.allowToken = true;
+        else if (flag == 'p' && offerPersist)
+            data.allowToken = data.persist = true;
         else
             Debug::log(LOG, "[screencopy] unknown flag from share-picker: {}", flag);
     }

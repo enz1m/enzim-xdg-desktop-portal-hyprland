@@ -67,7 +67,7 @@ class CRemoteDesktopPortal {
     std::unordered_map<std::string, SSession>::iterator callerSession(sdbus::ObjectPath sessionHandle);
     SSession* active(const std::string& sessionHandle, uint32_t device);
     SSession* notifiable(const std::string& sessionHandle, uint32_t device);
-    bool      askControl(const std::string& appID, uint32_t devices);
+    bool      askControl(const std::string& appID, uint32_t devices, bool offerPersist, bool& persist);
     void      ensureDevices(const std::string& sessionHandle, SSession& session);
     void      forget(const std::string& sessionHandle);
     void      keyboardKey(SSession& session, uint32_t keycode, uint32_t state);

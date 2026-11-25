@@ -14,57 +14,71 @@
 constexpr static int MAX_RETRIES        = 10;
 constexpr static int MAX_DMABUF_RETRIES = 2;
 
-constexpr static size_t                              MAX_RESTORE_GRANTS = 32;
-
-sdbus::Struct<std::string, uint32_t, sdbus::Variant> CScreencopyPortal::issueRestoreData(const SSession& session) {
-    const auto&                                     data = session.selection;
-    SRestoreGrant                                   grant{.token = getRandomUUID(), .appID = session.appid, .withCursor = session.cursorMode == EMBEDDED};
-
-    std::unordered_map<std::string, sdbus::Variant> mapData;
+sdbus::Struct<std::string, uint32_t, sdbus::Variant> CScreencopyPortal::issueRestoreData(SSession& session) {
+    const auto&      data = session.selection;
+    SScreencastGrant grant{.appID = session.appid, .withCursor = session.cursorMode == EMBEDDED};
+    if (session.restoredGrant)
+        grant.id = session.restoredGrant->id;
 
     switch (data.type) {
         case TYPE_GEOMETRY:
-            grant.output        = data.output;
-            grant.geometry      = {data.x, data.y, data.w, data.h};
-            mapData["output"]   = sdbus::Variant{data.output};
-            mapData["geometry"] = sdbus::Variant{sdbus::Struct<uint32_t, uint32_t, uint32_t, uint32_t>{data.x, data.y, data.w, data.h}};
-            break;
+            grant.kind = SScreencastGrant::KIND_REGION;
+            grant.x    = data.x;
+            grant.y    = data.y;
+            grant.w    = data.w;
+            grant.h    = data.h;
+            [[fallthrough]];
         case TYPE_OUTPUT:
-            grant.output      = data.output;
-            mapData["output"] = sdbus::Variant{data.output};
+            grant.output = data.output;
+            if (const auto* output = g_pPortalManager->getOutputFromName(data.output))
+                grant.outputIdentity = output->identity;
             break;
         case TYPE_WINDOW:
-            grant.windowHandle      = (uint64_t)data.windowHandle->resource();
-            grant.windowClass       = data.windowClass;
-            mapData["windowHandle"] = sdbus::Variant{grant.windowHandle};
-            mapData["windowClass"]  = sdbus::Variant{data.windowClass};
+            grant.kind         = SScreencastGrant::KIND_WINDOW;
+            grant.windowHandle = data.windowHandle ? (uint64_t)data.windowHandle->resource() : 0;
+            grant.windowClass  = data.windowClass;
             break;
         default: Debug::log(ERR, "[screencopy] wonk selection in token saving"); break;
     }
-    mapData["timeIssued"] = sdbus::Variant{uint64_t(time(nullptr))};
-    mapData["token"]      = sdbus::Variant{grant.token};
-    mapData["withCursor"] = sdbus::Variant{session.cursorMode};
+    // The frontend keeps restore data across its own restarts only for persist_mode 2.
+    grant.persistent = data.persist && session.persistMode == 2;
+    grant.devices    = session.grantDevices;
 
-    if (m_vRestoreGrants.size() >= MAX_RESTORE_GRANTS)
-        m_vRestoreGrants.erase(m_vRestoreGrants.begin());
-    m_vRestoreGrants.emplace_back(std::move(grant));
+    const auto issued = m_grants.issue(std::move(grant));
+    Debug::log(LOG, "[screencopy] Issued a {} grant", issued.persistent ? "persistent" : "session");
 
-    sdbus::Variant restoreData{mapData};
-
-    return sdbus::Struct<std::string, uint32_t, sdbus::Variant>{"hyprland", 3, restoreData};
+    std::unordered_map<std::string, sdbus::Variant> mapData;
+    mapData["token"] = sdbus::Variant{issued.token};
+    return sdbus::Struct<std::string, uint32_t, sdbus::Variant>{"hyprland", 3, sdbus::Variant{mapData}};
 }
 
-std::optional<CScreencopyPortal::SRestoreGrant> CScreencopyPortal::redeemRestoreToken(const std::string& token, const std::string& appID) {
+std::optional<SScreencastGrant> CScreencopyPortal::redeemRestoreData(const sdbus::Variant& restoreData, const std::string& appID) {
     // Restore data reaches this backend through the frontend's permission store, which other local
-    // processes can write: only a token this process issued to the same app skips the picker.
-    const auto it = std::ranges::find_if(m_vRestoreGrants, [&](const auto& grant) { return grant.token == token; });
-    if (it == m_vRestoreGrants.end())
+    // processes can write: only a token this backend issued to the same app skips the picker.
+    try {
+        auto suv = restoreData.get<sdbus::Struct<std::string, uint32_t, sdbus::Variant>>();
+        if (suv.get<0>() != "hyprland" || suv.get<1>() != 3) {
+            Debug::log(LOG, "[screencopy] Restore token from {} ver {}, ignoring", suv.get<0>(), suv.get<1>());
+            return std::nullopt;
+        }
+        const auto sv    = suv.get<2>().get<std::unordered_map<std::string, sdbus::Variant>>();
+        const auto TOKEN = sv.find("token");
+        if (TOKEN == sv.end() || !TOKEN->second.containsValueOfType<std::string>())
+            return std::nullopt;
+        auto grant = m_grants.redeem(TOKEN->second.get<std::string>(), appID);
+        Debug::log(LOG, "[screencopy] Restore token {}", grant ? (grant->persistent ? "persistent" : "for this session") : "unknown, ignoring");
+        return grant;
+    } catch (std::exception& e) {
+        Debug::log(LOG, "[screencopy] Malformed restore data: {}", e.what());
         return std::nullopt;
-    auto grant = std::move(*it);
-    m_vRestoreGrants.erase(it);
-    if (grant.appID != appID)
-        return std::nullopt;
-    return grant;
+    }
+}
+
+bool CScreencopyPortal::grantStillMatches(const SScreencastGrant& grant) {
+    if (grant.kind == SScreencastGrant::KIND_WINDOW)
+        return !grant.windowClass.empty() && g_pPortalManager->m_sHelpers.toplevel->handleFromClass(grant.windowClass);
+    const auto* output = g_pPortalManager->getOutputFromName(grant.output);
+    return CGrantStore::sameMonitor(grant, output ? &output->identity : nullptr);
 }
 
 CScreencopyPortal::SSession* CScreencopyPortal::callerSession(sdbus::ObjectPath& sessionHandle) {
@@ -120,7 +134,7 @@ dbUasv CScreencopyPortal::onSelectSources(sdbus::ObjectPath requestHandle, sdbus
         throw sdbus::Error{sdbus::Error::Name{"org.freedesktop.portal.Error.NotFound"}, "No session found"};
     }
 
-    std::optional<SRestoreGrant> restoreData;
+    std::optional<SScreencastGrant> restoreData = std::exchange(PSESSION->pendingRestore, std::nullopt);
 
     for (auto& [key, val] : options) {
 
@@ -128,24 +142,8 @@ dbUasv CScreencopyPortal::onSelectSources(sdbus::ObjectPath requestHandle, sdbus
             PSESSION->cursorMode = val.get<uint32_t>();
             Debug::log(LOG, "[screencopy] option cursor_mode to {}", PSESSION->cursorMode);
         } else if (key == "restore_data") {
-            // suv
-            // v -> a(sv) -> v3
-            auto suv     = val.get<sdbus::Struct<std::string, uint32_t, sdbus::Variant>>();
-            auto issuer  = suv.get<0>();
-            auto version = suv.get<1>();
-
-            if (issuer != "hyprland" || version != 3) {
-                Debug::log(LOG, "[screencopy] Restore token from {} ver {}, ignoring", issuer, version);
-                continue;
-            }
-
-            const auto sv    = suv.get<2>().get<std::unordered_map<std::string, sdbus::Variant>>();
-            const auto TOKEN = sv.find("token");
-            if (TOKEN == sv.end() || !TOKEN->second.containsValueOfType<std::string>())
-                continue;
-
-            restoreData = redeemRestoreToken(TOKEN->second.get<std::string>(), PSESSION->appid);
-            Debug::log(LOG, "[screencopy] Restore token {}", restoreData ? "issued here" : "unknown, ignoring");
+            if (!restoreData)
+                restoreData = redeemRestoreData(val, PSESSION->appid);
         } else if (key == "persist_mode") {
             PSESSION->persistMode = val.get<uint32_t>();
             Debug::log(LOG, "[screencopy] option persist_mode to {}", PSESSION->persistMode);
@@ -154,39 +152,34 @@ dbUasv CScreencopyPortal::onSelectSources(sdbus::ObjectPath requestHandle, sdbus
         }
     }
 
-    // clang-format off
-    const bool     RESTOREDATAVALID = restoreData &&
-    (
-        (!restoreData->output.empty() && g_pPortalManager->getOutputFromName(restoreData->output)) || // output exists
-        (!restoreData->windowClass.empty() && g_pPortalManager->m_sHelpers.toplevel->handleFromClass(restoreData->windowClass)) // window exists
-    );
-    // clang-format on
-
+    PSESSION->restoredGrant.reset();
     SSelectionData SHAREDATA;
-    if (RESTOREDATAVALID) {
+    if (restoreData && grantStillMatches(*restoreData)) {
         Debug::log(LOG, "[screencopy] restore data valid, not prompting");
 
-        const bool WINDOW      = !restoreData->windowClass.empty();
-        const bool GEOMETRY    = restoreData->geometry.w > 0 && restoreData->geometry.h > 0;
+        const bool WINDOW      = restoreData->kind == SScreencastGrant::KIND_WINDOW;
         const auto HANDLEMATCH = WINDOW && restoreData->windowHandle != 0 ? g_pPortalManager->m_sHelpers.toplevel->handleFromHandleFull(restoreData->windowHandle) : nullptr;
 
         SHAREDATA.output       = restoreData->output;
-        SHAREDATA.type         = WINDOW ? TYPE_WINDOW : (GEOMETRY ? TYPE_GEOMETRY : TYPE_OUTPUT);
+        SHAREDATA.type         = WINDOW ? TYPE_WINDOW : (restoreData->kind == SScreencastGrant::KIND_REGION ? TYPE_GEOMETRY : TYPE_OUTPUT);
         SHAREDATA.windowHandle = WINDOW ? (HANDLEMATCH ? HANDLEMATCH->handle : g_pPortalManager->m_sHelpers.toplevel->handleFromClass(restoreData->windowClass)->handle) : nullptr;
         SHAREDATA.windowClass  = restoreData->windowClass;
-        SHAREDATA.allowToken   = true; // user allowed token before
+        SHAREDATA.allowToken   = true;
+        SHAREDATA.persist      = restoreData->persistent;
         PSESSION->cursorMode   = restoreData->withCursor ? EMBEDDED : HIDDEN;
 
-        if (GEOMETRY) {
-            SHAREDATA.x = restoreData->geometry.x;
-            SHAREDATA.y = restoreData->geometry.y;
-            SHAREDATA.w = restoreData->geometry.w;
-            SHAREDATA.h = restoreData->geometry.h;
+        if (restoreData->kind == SScreencastGrant::KIND_REGION) {
+            SHAREDATA.x = restoreData->x;
+            SHAREDATA.y = restoreData->y;
+            SHAREDATA.w = restoreData->w;
+            SHAREDATA.h = restoreData->h;
         }
+        PSESSION->restoredGrant = std::move(restoreData);
     } else {
         Debug::log(LOG, "[screencopy] restore data invalid / missing, prompting");
 
-        SHAREDATA = promptForScreencopySelection();
+        // Persisting needs an app id to tie the grant to and a frontend that keeps the token.
+        SHAREDATA = promptForScreencopySelection(PSESSION->persistMode == 2 && !PSESSION->appid.empty());
     }
 
     Debug::log(LOG, "[screencopy] SHAREDATA returned selection {}", (int)SHAREDATA.type);

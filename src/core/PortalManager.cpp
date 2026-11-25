@@ -34,9 +34,21 @@ SOutput::SOutput(SP<CCWlOutput> output_) : output(output_) {
             transform = (wl_output_transform)transform_;
             x         = x_;
             y         = y_;
+            makeModel = std::format("{} {}", make ? make : "", model ? model : "");
         });
+    output->setDescription([this](CCWlOutput* r, const char* description_) { description = description_ ? description_ : ""; });
     output->setScale([this](CCWlOutput* r, uint32_t factor_) { scale = factor_; });
-    output->setDone([](CCWlOutput* r) {
+    output->setDone([this](CCWlOutput* r) {
+        const auto trimmed = [](const std::string& text) {
+            const auto first = text.find_first_not_of(' ');
+            return first == std::string::npos ? std::string{} : text.substr(first, text.find_last_not_of(' ') - first + 1);
+        };
+        // Virtual and EDID-less outputs report nothing; a monitor with an identity never matches them.
+        identity = trimmed(description);
+        if (identity.empty())
+            identity = trimmed(makeModel);
+        if (identity.empty())
+            identity = "unidentified output";
         if (g_pPortalManager->m_sPortals.inputCapture != nullptr)
             g_pPortalManager->m_sPortals.inputCapture->zonesChanged();
     });

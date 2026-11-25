@@ -185,6 +185,12 @@ dbUasv CRemoteDesktopPortal::onSelectDevices(sdbus::ObjectPath requestHandle, sd
     if (opts.contains("types"))
         types = opts["types"].get<uint32_t>();
     it->second.requested = types & available();
+    // The frontend accepts persistence for a remote-desktop session only here, not in SelectSources.
+    auto* shared = g_pPortalManager->m_sPortals.screencopy->getSession(sessionHandle);
+    if (shared && opts.contains("persist_mode"))
+        shared->persistMode = opts["persist_mode"].get<uint32_t>();
+    if (shared && opts.contains("restore_data"))
+        shared->pendingRestore = g_pPortalManager->m_sPortals.screencopy->redeemRestoreData(opts["restore_data"], shared->appid);
     return {0, {}};
 }
 
@@ -195,10 +201,21 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
     if (it == m_sessions.end() || it->second.started || !screencopy)
         return {1, {}};
     auto& session = it->second;
-    session.granted = session.requested && askControl(session.appID, session.requested) ? session.requested : 0;
+    auto* shared  = screencopy->getSession(sessionHandle);
+    const auto& restored = shared ? shared->restoredGrant : std::nullopt;
+    if (session.requested && restored && (restored->devices & session.requested) == session.requested) {
+        session.granted      = session.requested;
+        shared->grantDevices = restored->devices;
+    } else if (session.requested) {
+        // Control is remembered only together with a screen the user chose to keep after a restart.
+        const bool offerPersist = shared && shared->selection.persist && shared->persistMode == 2;
+        bool       persist      = false;
+        session.granted         = askControl(session.appID, session.requested, offerPersist, persist) ? session.requested : 0;
+        if (shared)
+            shared->grantDevices = persist ? session.granted : 0;
+    }
 
     std::unordered_map<std::string, sdbus::Variant> results;
-    auto* shared = screencopy->getSession(sessionHandle);
     if (shared && shared->selection.type != TYPE_INVALID) {
         auto [response, cast] = screencopy->onStart(requestHandle, sessionHandle, appID, parentWindow, opts);
         if (response != 0)
@@ -245,7 +262,8 @@ sdbus::UnixFd CRemoteDesktopPortal::onConnectToEIS(sdbus::ObjectPath sessionHand
     return sdbus::UnixFd{fd, sdbus::adopt_fd};
 }
 
-bool CRemoteDesktopPortal::askControl(const std::string& appID, uint32_t devices) {
+bool CRemoteDesktopPortal::askControl(const std::string& appID, uint32_t devices, bool offerPersist, bool& persist) {
+    persist = false;
     try {
         auto proxy = sdbus::createProxy(*g_pPortalManager->getConnection(), sdbus::ServiceName{CONSENT_SERVICE}, sdbus::ObjectPath{"/org/freedesktop/portal/desktop"});
         const auto handle = sdbus::ObjectPath{std::format("/org/freedesktop/portal/desktop/request/enzui_remote/r{}", ++m_consentSerial)};
@@ -254,6 +272,9 @@ bool CRemoteDesktopPortal::askControl(const std::string& appID, uint32_t devices
         std::unordered_map<std::string, sdbus::Variant> options;
         options["grant_label"] = sdbus::Variant{std::string{"Allow control"}};
         options["deny_label"]  = sdbus::Variant{std::string{"View only"}};
+        using Choice = sdbus::Struct<std::string, std::string, std::vector<sdbus::Struct<std::string, std::string>>, std::string>;
+        if (offerPersist)
+            options["choices"] = sdbus::Variant{std::vector<Choice>{Choice{"persist", "Allow after restart", {}, "false"}}};
         uint32_t                                        response = 2;
         std::unordered_map<std::string, sdbus::Variant> results;
         proxy->callMethod("AccessDialog")
@@ -263,7 +284,13 @@ bool CRemoteDesktopPortal::askControl(const std::string& appID, uint32_t devices
                            std::format("It asks to use {} while the screen is shared.", what),
                            std::string{"Allow it only if you trust whoever is connecting. Locking the screen ends control."}, options)
             .storeResultsTo(response, results);
-        return response == 0;
+        if (response != 0)
+            return false;
+        if (offerPersist && results.contains("choices")) {
+            for (const auto& choice : results["choices"].get<std::vector<sdbus::Struct<std::string, std::string>>>())
+                persist = persist || (choice.get<0>() == "persist" && choice.get<1>() == "true");
+        }
+        return true;
     } catch (std::exception& e) {
         Debug::log(ERR, "[remotedesktop] consent unavailable: {}", e.what());
         return false;

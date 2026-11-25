@@ -36,6 +36,8 @@ struct SSelectionData {
     SP<CCZwlrForeignToplevelHandleV1> windowHandle = nullptr;
     uint32_t                          x = 0, y = 0, w = 0, h = 0; // for TYPE_GEOMETRY
     bool                              allowToken = false;
+    // The user also chose to keep the grant after a restart.
+    bool                              persist = false;
 
     // for restoring
     std::string windowClass;
@@ -43,7 +45,7 @@ struct SSelectionData {
 
 struct wl_buffer;
 
-SSelectionData   promptForScreencopySelection();
+SSelectionData   promptForScreencopySelection(bool offerPersist);
 uint32_t         drmFourccFromSHM(wl_shm_format format);
 spa_video_format pwFromDrmFourcc(uint32_t format);
 wl_shm_format    wlSHMFromDrmFourcc(uint32_t format);
