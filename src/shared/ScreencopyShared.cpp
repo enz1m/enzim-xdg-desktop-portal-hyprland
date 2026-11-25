@@ -8,6 +8,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <filesystem>
 
 #include <hyprutils/os/Process.hpp>
 using namespace Hyprutils::OS;
@@ -39,7 +41,27 @@ std::string buildWindowList() {
     return result;
 }
 
-SSelectionData promptForScreencopySelection(bool offerPersist) {
+static bool isExecutable(const std::string& path) {
+    return !path.empty() && access(path.c_str(), X_OK) == 0 && std::filesystem::is_regular_file(path);
+}
+
+// A configured picker wins, then the enzUI picker installed beside this portal, then the Qt one.
+static std::string pickerBinary(const std::string& configured) {
+    if (!configured.empty())
+        return configured;
+
+    std::error_code ec;
+    const auto      SELF = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec) {
+        const auto BESIDE = (SELF.parent_path() / "enzui-share-picker").string();
+        if (isExecutable(BESIDE))
+            return BESIDE;
+    }
+
+    return "hyprland-share-picker";
+}
+
+SSelectionData promptForScreencopySelection(bool offerPersist, const std::string& appID) {
     SSelectionData      data;
 
     const char*         WAYLAND_DISPLAY             = getenv("WAYLAND_DISPLAY");
@@ -54,7 +76,7 @@ SSelectionData promptForScreencopySelection(bool offerPersist) {
     if (**PALLOWTOKENBYDEFAULT)
         args.emplace_back("--allow-token");
 
-    CProcess proc(std::string{*PCUSTOMPICKER}.empty() ? "hyprland-share-picker" : *PCUSTOMPICKER, args);
+    CProcess proc(pickerBinary(std::string{*PCUSTOMPICKER}), args);
     proc.addEnv("WAYLAND_DISPLAY", WAYLAND_DISPLAY ? WAYLAND_DISPLAY : "");
     proc.addEnv("QT_QPA_PLATFORM", "wayland");
     proc.addEnv("XCURSOR_SIZE", XCURSOR_SIZE ? XCURSOR_SIZE : "24");
@@ -62,6 +84,8 @@ SSelectionData promptForScreencopySelection(bool offerPersist) {
     proc.addEnv("XDPH_WINDOW_SHARING_LIST", buildWindowList());
     if (offerPersist)
         proc.addEnv("XDPH_OFFER_PERSIST", "1"); // buildWindowList will sanitize any shell stuff in case the picker (qt) does something funky? It shouldn't.
+    // Only for display: the picker shows which app asks, and the frontend vouches for the id.
+    proc.addEnv("XDPH_APP_ID", appID);
 
     if (!proc.runSync())
         return data;

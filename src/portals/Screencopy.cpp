@@ -179,7 +179,7 @@ dbUasv CScreencopyPortal::onSelectSources(sdbus::ObjectPath requestHandle, sdbus
         Debug::log(LOG, "[screencopy] restore data invalid / missing, prompting");
 
         // Persisting needs an app id to tie the grant to and a frontend that keeps the token.
-        SHAREDATA = promptForScreencopySelection(PSESSION->persistMode == 2 && !PSESSION->appid.empty());
+        SHAREDATA = promptForScreencopySelection(PSESSION->persistMode == 2 && !PSESSION->appid.empty(), PSESSION->appid);
     }
 
     Debug::log(LOG, "[screencopy] SHAREDATA returned selection {}", (int)SHAREDATA.type);
