@@ -35,6 +35,8 @@ struct zwp_virtual_keyboard_manager_v1;
 
 class CCZxdgOutputManagerV1;
 class CCZxdgOutputV1;
+class CCHyprlandLockNotifierV1;
+class CCHyprlandLockNotificationV1;
 
 struct SOutput {
     SOutput(SP<CCWlOutput>);
@@ -69,7 +71,8 @@ class CPortalManager {
   public:
     CPortalManager();
 
-    void                                         init();
+    // Runs the portal until it is terminated; returns the process exit status.
+    int                                          init();
 
     void                                         onGlobal(uint32_t name, const char* interface, uint32_t version);
     void                                         onGlobalRemoved(uint32_t name);
@@ -109,6 +112,9 @@ class CPortalManager {
         SP<CCZwpLinuxDmabufFeedbackV1>        linuxDmabufFeedback;
         SP<CCZxdgOutputManagerV1>             xdgOutputManager;
         SP<CCWlShm>                           shm;
+        SP<CCHyprlandLockNotifierV1>          lockNotifier;
+        SP<CCHyprlandLockNotificationV1>      lockNotification;
+        bool                                  locked = false;
         // enzUI: RemoteDesktop input.
         zwlr_virtual_pointer_manager_v1*      enzuiVirtualPointer        = nullptr;
         uint32_t                              enzuiVirtualPointerVersion = 0;
@@ -141,10 +147,30 @@ class CPortalManager {
     void terminate();
 
   private:
-    void  startEventLoop();
+    enum class eLoopEnd {
+        TERMINATED,
+        RECONNECT,
+    };
+
+    enum class eConnect {
+        CONNECTED,
+        NO_COMPOSITOR,
+        NOT_ADMITTED,
+    };
+
+    eConnect connectWayland();
+    void     disconnectWayland();
+    eLoopEnd runEventLoop();
+    // Drops the Wayland side and connects again, keeping the D-Bus name.
+    void     requestReconnect();
+    bool     stopping() const;
+    void     wakePollThread();
     void  setupXDGOutput(SOutput* output);
 
     std::atomic<bool> m_bTerminate = false;
+    std::atomic<bool> m_bReconnect = false;
+    bool              m_bCaptureRetried = false;
+    int               m_iWakeFd    = -1;
     pid_t m_iPID       = 0;
 
     struct {

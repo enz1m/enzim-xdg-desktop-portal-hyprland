@@ -39,7 +39,5 @@ int main(int argc, char** argv, char** envp) {
 
     Debug::log(LOG, "Initializing xdph...");
 
-    g_pPortalManager->init();
-
-    return 0;
+    return g_pPortalManager->init();
 }
