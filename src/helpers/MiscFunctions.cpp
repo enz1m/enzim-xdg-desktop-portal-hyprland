@@ -26,8 +26,8 @@ std::string execAndGet(const char* cmd) {
 }
 
 void addHyprlandNotification(const std::string& icon, float timeMs, const std::string& color, const std::string& message) {
-    // argv, never /bin/sh -c: `message` can carry untrusted text (e.g. an app_id) a shell would expand
-    CProcess proc("hyprctl", {"notify", icon, std::format("{}", timeMs), color, message});
+    const char* control = std::getenv("ENZUI_HYPR_CONTROL_BIN");
+    CProcess    proc(control && *control ? control : "hyprctl", {"notify", icon, std::format("{}", timeMs), color, message});
     proc.runAsync();
 }
 
