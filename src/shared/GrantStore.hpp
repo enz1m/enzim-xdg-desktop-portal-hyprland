@@ -23,6 +23,8 @@ struct SScreencastGrant {
     std::string output;
     // The monitor's make, model and serial as the compositor describes it.
     std::string outputIdentity;
+    // Only session grants can match an output by its Wayland registry global.
+    uint32_t    outputGlobal = 0;
     uint32_t    x = 0, y = 0, w = 0, h = 0;
     uint64_t    windowHandle = 0;
     std::string windowClass;

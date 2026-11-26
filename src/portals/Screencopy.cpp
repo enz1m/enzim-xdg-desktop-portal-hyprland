@@ -14,7 +14,10 @@
 constexpr static int MAX_RETRIES        = 10;
 constexpr static int MAX_DMABUF_RETRIES = 2;
 
-sdbus::Struct<std::string, uint32_t, sdbus::Variant> CScreencopyPortal::issueRestoreData(SSession& session) {
+void                 CScreencopyPortal::addRestoreData(SSession& session, std::unordered_map<std::string, sdbus::Variant>& results) {
+    if (!session.selection.allowToken || session.persistMode == 0)
+        return;
+
     const auto&      data = session.selection;
     SScreencastGrant grant{.appID = session.appid, .withCursor = session.cursorMode == EMBEDDED};
     if (session.restoredGrant)
@@ -30,8 +33,10 @@ sdbus::Struct<std::string, uint32_t, sdbus::Variant> CScreencopyPortal::issueRes
             [[fallthrough]];
         case TYPE_OUTPUT:
             grant.output = data.output;
-            if (const auto* output = g_pPortalManager->getOutputFromName(data.output))
+            if (const auto* output = g_pPortalManager->getOutputFromName(data.output)) {
                 grant.outputIdentity = output->identity;
+                grant.outputGlobal   = output->id;
+            }
             break;
         case TYPE_WINDOW:
             grant.kind         = SScreencastGrant::KIND_WINDOW;
@@ -40,7 +45,6 @@ sdbus::Struct<std::string, uint32_t, sdbus::Variant> CScreencopyPortal::issueRes
             break;
         default: Debug::log(ERR, "[screencopy] wonk selection in token saving"); break;
     }
-    // The frontend keeps restore data across its own restarts only for persist_mode 2.
     grant.persistent = data.persist && session.persistMode == 2;
     grant.devices    = session.grantDevices;
 
@@ -49,7 +53,8 @@ sdbus::Struct<std::string, uint32_t, sdbus::Variant> CScreencopyPortal::issueRes
 
     std::unordered_map<std::string, sdbus::Variant> mapData;
     mapData["token"] = sdbus::Variant{issued.token};
-    return sdbus::Struct<std::string, uint32_t, sdbus::Variant>{"hyprland", 3, sdbus::Variant{mapData}};
+    results["restore_data"] = sdbus::Variant{sdbus::Struct<std::string, uint32_t, sdbus::Variant>{"hyprland", 3, sdbus::Variant{mapData}}};
+    results["persist_mode"] = sdbus::Variant{uint32_t{issued.persistent ? 2u : 1u}};
 }
 
 std::optional<SScreencastGrant> CScreencopyPortal::redeemRestoreData(const sdbus::Variant& restoreData, const std::string& appID) {
@@ -78,7 +83,11 @@ bool CScreencopyPortal::grantStillMatches(const SScreencastGrant& grant) {
     if (grant.kind == SScreencastGrant::KIND_WINDOW)
         return !grant.windowClass.empty() && g_pPortalManager->m_sHelpers.toplevel->handleFromClass(grant.windowClass);
     const auto* output = g_pPortalManager->getOutputFromName(grant.output);
-    return CGrantStore::sameMonitor(grant, output ? &output->identity : nullptr);
+    if (!output)
+        return false;
+    if (!grant.persistent)
+        return grant.outputGlobal == output->id;
+    return CGrantStore::sameMonitor(grant, &output->identity);
 }
 
 CScreencopyPortal::SSession* CScreencopyPortal::callerSession(sdbus::ObjectPath& sessionHandle) {
@@ -165,8 +174,7 @@ dbUasv CScreencopyPortal::onSelectSources(sdbus::ObjectPath requestHandle, sdbus
         SHAREDATA.windowHandle = WINDOW ? (HANDLEMATCH ? HANDLEMATCH->handle : g_pPortalManager->m_sHelpers.toplevel->handleFromClass(restoreData->windowClass)->handle) : nullptr;
         SHAREDATA.windowClass  = restoreData->windowClass;
         SHAREDATA.allowToken   = true;
-        SHAREDATA.persist      = restoreData->persistent;
-        PSESSION->cursorMode   = restoreData->withCursor ? EMBEDDED : HIDDEN;
+        SHAREDATA.persist      = restoreData->persistent && PSESSION->persistMode == 2;
 
         if (restoreData->kind == SScreencastGrant::KIND_REGION) {
             SHAREDATA.x = restoreData->x;
@@ -220,17 +228,13 @@ dbUasv CScreencopyPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Object
         throw sdbus::Error{sdbus::Error::Name{"org.freedesktop.portal.Error.NotFound"}, "No session found"};
     }
 
-    startSharing(PSESSION);
+    if (!startSharing(PSESSION)) {
+        m_pPipewire->destroyStream(PSESSION);
+        return {2, {}};
+    }
 
     std::unordered_map<std::string, sdbus::Variant> options;
-
-    if (PSESSION->selection.allowToken) {
-        // give them a token :)
-        options["restore_data"] = sdbus::Variant{issueRestoreData(*PSESSION)};
-        options["persist_mode"] = sdbus::Variant{uint32_t{2}};
-
-        Debug::log(LOG, "[screencopy] Sent restore token to {}", PSESSION->sessionHandle.c_str());
-    }
+    addRestoreData(*PSESSION, options);
 
     uint32_t type = 0;
     switch (PSESSION->selection.type) {
@@ -245,12 +249,18 @@ dbUasv CScreencopyPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Object
     std::vector<sdbus::Struct<uint32_t, std::unordered_map<std::string, sdbus::Variant>>> streams;
 
     std::unordered_map<std::string, sdbus::Variant>                                       streamData;
-    streamData["position"]    = sdbus::Variant{sdbus::Struct<int32_t, int32_t>{0, 0}};
     streamData["size"]        = sdbus::Variant{sdbus::Struct<int32_t, int32_t>{PSESSION->sharingData.frameInfoSHM.w, PSESSION->sharingData.frameInfoSHM.h}};
     streamData["source_type"] = sdbus::Variant{uint32_t{type}};
 
-    if (PSESSION->selection.type == TYPE_OUTPUT && !PSESSION->selection.output.empty())
-        streamData["mapping_id"] = sdbus::Variant{PSESSION->selection.output};
+    if (PSESSION->selection.type == TYPE_OUTPUT) {
+        if (const auto* output = g_pPortalManager->getOutputFromName(PSESSION->selection.output)) {
+            streamData["mapping_id"] = sdbus::Variant{output->name};
+            if (output->logicalPositionValid)
+                streamData["position"] = sdbus::Variant{sdbus::Struct<int32_t, int32_t>{output->logicalX, output->logicalY}};
+            if (output->logicalSizeValid)
+                streamData["size"] = sdbus::Variant{sdbus::Struct<int32_t, int32_t>{output->logicalWidth, output->logicalHeight}};
+        }
+    }
 
     if (PSESSION->sharingData.pipewireSerial != 0)
         streamData["pipewire-serial"] = sdbus::Variant{PSESSION->sharingData.pipewireSerial};
@@ -262,17 +272,20 @@ dbUasv CScreencopyPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Object
     return {0, options};
 }
 
-void CScreencopyPortal::startSharing(CScreencopyPortal::SSession* pSession) {
+bool CScreencopyPortal::startSharing(CScreencopyPortal::SSession* pSession) {
     pSession->sharingData.active = true;
 
     startFrameCopy(pSession);
 
-    wl_display_dispatch(g_pPortalManager->m_sWaylandConnection.display);
-    wl_display_roundtrip(g_pPortalManager->m_sWaylandConnection.display);
+    if (!pSession->sharingData.frameCallback && !pSession->sharingData.windowFrameCallback)
+        return false;
+
+    if (wl_display_roundtrip(g_pPortalManager->m_sWaylandConnection.display) < 0)
+        return false;
 
     if (pSession->sharingData.frameInfoDMA.fmt == DRM_FORMAT_INVALID) {
-        Debug::log(ERR, "[screencopy] Couldn't obtain a format from dma"); // todo: blocks shm
-        return;
+        Debug::log(ERR, "[screencopy] Couldn't obtain a format from dma");
+        return false;
     }
 
     m_pPipewire->createStream(pSession);
@@ -281,7 +294,7 @@ void CScreencopyPortal::startSharing(CScreencopyPortal::SSession* pSession) {
         int ret = pw_loop_iterate(g_pPortalManager->m_sPipewire.loop, 0);
         if (ret < 0) {
             Debug::log(ERR, "[pipewire] pw_loop_iterate failed with {}", spa_strerror(ret));
-            return;
+            return false;
         }
     }
 
@@ -290,6 +303,7 @@ void CScreencopyPortal::startSharing(CScreencopyPortal::SSession* pSession) {
     g_pPortalManager->m_sPortals.screencopy->queueNextShareFrame(pSession);
 
     Debug::log(TRACE, "[sc] queued frame in {}ms", 1000.0 / pSession->sharingData.framerate);
+    return true;
 }
 
 void CScreencopyPortal::startFrameCopy(CScreencopyPortal::SSession* pSession) {

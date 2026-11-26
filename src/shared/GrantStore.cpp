@@ -243,7 +243,7 @@ std::string CGrantStore::defaultPath() {
 }
 
 bool CGrantStore::persistable(const SScreencastGrant& grant) {
-    if (grant.appID.empty() || grant.output.empty() || grant.outputIdentity.empty())
+    if (grant.appID.empty() || grant.output.empty() || grant.outputIdentity.empty() || grant.outputIdentity == "unidentified output")
         return false;
     if (grant.kind == SScreencastGrant::KIND_REGION)
         return grant.w > 0 && grant.h > 0;

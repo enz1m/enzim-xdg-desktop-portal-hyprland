@@ -135,7 +135,7 @@ class CScreencopyPortal {
     std::optional<SScreencastGrant> redeemRestoreData(const sdbus::Variant& restoreData, const std::string& appID);
 
   private:
-    sdbus::Struct<std::string, uint32_t, sdbus::Variant> issueRestoreData(SSession& session);
+    void                                                     addRestoreData(SSession& session, std::unordered_map<std::string, sdbus::Variant>& results);
     bool                                                 grantStillMatches(const SScreencastGrant& grant);
 
     CGrantStore                                          m_grants{CGrantStore::defaultPath()};
@@ -143,7 +143,7 @@ class CScreencopyPortal {
 
     std::vector<Hyprutils::Memory::CUniquePointer<SSession>> m_vSessions;
 
-    void                                                     startSharing(SSession* pSession);
+    bool                                                     startSharing(SSession* pSession);
 
     struct {
         SP<CCZwlrScreencopyManagerV1>         screencopy = nullptr;

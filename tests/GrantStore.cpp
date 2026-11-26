@@ -106,7 +106,7 @@ int main() {
         CHECK(store.issue(grant).devices == 0);
     });
 
-    test("windows and apps without an id stay session grants", [](const fs::path& path) {
+    test("sources without a persistent identity stay session grants", [](const fs::path& path) {
         CGrantStore store{path};
         auto        window = SScreencastGrant{.appID = "org.obs.Studio", .kind = SScreencastGrant::KIND_WINDOW, .windowClass = "firefox", .persistent = true};
         CHECK(!store.issue(window).persistent);
@@ -114,6 +114,9 @@ int main() {
         auto unknownMonitor           = screen("org.obs.Studio", true);
         unknownMonitor.outputIdentity = "";
         CHECK(!store.issue(unknownMonitor).persistent);
+        unknownMonitor.outputIdentity = "unidentified output";
+        CHECK(!store.issue(unknownMonitor).persistent);
+        CHECK(parseGrants(serializeGrants({unknownMonitor})).empty());
         CHECK(store.persisted().empty());
     });
 
