@@ -19,7 +19,7 @@ void closeAllDBusSessions() {
         if (!session->object)
             continue;
         try {
-            session->object->emitSignal("Closed").onInterface("org.freedesktop.impl.portal.Session").withArguments(std::unordered_map<std::string, sdbus::Variant>{});
+            session->object->emitSignal("Closed").onInterface("org.freedesktop.impl.portal.Session");
         } catch (std::exception& e) { Debug::log(ERR, "[internal] Session {} not closed: {}", session->handle.c_str(), e.what()); }
         session->object.reset();
     }
@@ -44,22 +44,22 @@ static int onCloseRequest(SDBusRequest* req) {
     return 0;
 }
 
-static int onCloseSession(SDBusSession* sess) {
-    Debug::log(TRACE, "[internal] Close Session {}", (void*)sess);
+void closeDBusSession(SDBusSession& session, bool notify) {
+    if (!session.onDestroy)
+        return;
 
-    if (!sess)
-        return 0;
-
-    requireOwner(sess->owner);
-
-    auto destroy = std::move(sess->onDestroy);
-    g_pPortalManager->addTimer({0, [sess, destroy]() {
-                                    sess->object.reset();
-                                    if (destroy)
-                                        destroy();
+    auto destroy = std::move(session.onDestroy);
+    if (notify && session.object) {
+        try {
+            session.object->emitSignal("Closed").onInterface("org.freedesktop.impl.portal.Session");
+        } catch (const std::exception& error) {
+            Debug::log(ERR, "[internal] Session {} not closed: {}", session.handle.c_str(), error.what());
+        }
+    }
+    g_pPortalManager->addTimer({0, [session = &session, destroy = std::move(destroy)]() {
+                                    session->object.reset();
+                                    destroy();
                                 }});
-
-    return 0;
 }
 
 std::unique_ptr<SDBusSession> createDBusSession(sdbus::ObjectPath handle) {
@@ -72,8 +72,11 @@ std::unique_ptr<SDBusSession> createDBusSession(sdbus::ObjectPath handle) {
     pSession->object = sdbus::createObject(*g_pPortalManager->getConnection(), handle);
 
     pSession->handle                       = handle;
-    pSession->object->addVTable(sdbus::registerMethod("Close").implementedAs([PSESSION]() { onCloseSession(PSESSION); }),
-                                sdbus::registerSignal("Closed").withParameters<std::unordered_map<std::string, sdbus::Variant>>())
+    pSession->object->addVTable(sdbus::registerMethod("Close").implementedAs([PSESSION]() {
+                                    requireOwner(PSESSION->owner);
+                                    closeDBusSession(*PSESSION, false);
+                                }),
+                                sdbus::registerSignal("Closed"))
         .forInterface("org.freedesktop.impl.portal.Session");
 
     return pSession;

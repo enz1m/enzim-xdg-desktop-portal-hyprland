@@ -25,3 +25,4 @@ std::unique_ptr<SDBusSession> createDBusSession(sdbus::ObjectPath handle);
 std::unique_ptr<SDBusRequest> createDBusRequest(sdbus::ObjectPath handle);
 // Tells the frontend that every open session has ended and unexports them.
 void                          closeAllDBusSessions();
+void closeDBusSession(SDBusSession& session, bool notify);

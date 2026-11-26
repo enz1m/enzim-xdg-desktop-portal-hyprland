@@ -8,6 +8,7 @@
 #include "../portals/RemoteDesktop.hpp"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
+#include "enzui-assistant-input-v1-client-protocol.h"
 
 #include <pipewire/pipewire.h>
 #include <sys/eventfd.h>
@@ -110,6 +111,11 @@ void CPortalManager::onGlobal(uint32_t name, const char* interface, uint32_t ver
             (wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &zwlr_screencopy_manager_v1_interface, version)));
     }
 
+    if (INTERFACE == enzui_assistant_input_v1_interface.name) {
+        m_sWaylandConnection.assistantInputGlobal  = name;
+        m_sWaylandConnection.assistantInputVersion = version;
+    }
+
     if (INTERFACE == zwlr_virtual_pointer_manager_v1_interface.name) {
         m_sWaylandConnection.enzuiVirtualPointerVersion = std::min(version, 2u);
         m_sWaylandConnection.enzuiVirtualPointer        = (zwlr_virtual_pointer_manager_v1*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name,
@@ -125,7 +131,11 @@ void CPortalManager::onGlobal(uint32_t name, const char* interface, uint32_t ver
         m_sWaylandConnection.lockNotifier = makeShared<CCHyprlandLockNotifierV1>(
             (wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &hyprland_lock_notifier_v1_interface, 1));
         m_sWaylandConnection.lockNotification = makeShared<CCHyprlandLockNotificationV1>(m_sWaylandConnection.lockNotifier->sendGetLockNotification());
-        m_sWaylandConnection.lockNotification->setLocked([this](CCHyprlandLockNotificationV1*) { m_sWaylandConnection.locked = true; });
+        m_sWaylandConnection.lockNotification->setLocked([this](CCHyprlandLockNotificationV1*) {
+            m_sWaylandConnection.locked = true;
+            if (m_sPortals.remoteDesktop)
+                m_sPortals.remoteDesktop->suspendInput();
+        });
         m_sWaylandConnection.lockNotification->setUnlocked([this](CCHyprlandLockNotificationV1*) {
             m_sWaylandConnection.locked = false;
             if (!m_sPortals.screencopy && m_sPipewire.loop) {
@@ -486,6 +496,8 @@ void CPortalManager::disconnectWayland() {
         wl_seat_destroy(m_sWaylandConnection.enzuiSeat);
     m_sWaylandConnection.enzuiVirtualPointer        = nullptr;
     m_sWaylandConnection.enzuiVirtualPointerVersion = 0;
+    m_sWaylandConnection.assistantInputGlobal       = 0;
+    m_sWaylandConnection.assistantInputVersion      = 0;
     m_sWaylandConnection.enzuiVirtualKeyboard       = nullptr;
     m_sWaylandConnection.enzuiSeat                  = nullptr;
 

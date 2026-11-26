@@ -118,6 +118,8 @@ class CPortalManager {
         // enzUI: RemoteDesktop input.
         zwlr_virtual_pointer_manager_v1*      enzuiVirtualPointer        = nullptr;
         uint32_t                              enzuiVirtualPointerVersion = 0;
+        uint32_t                              assistantInputGlobal       = 0;
+        uint32_t                              assistantInputVersion      = 0;
         zwp_virtual_keyboard_manager_v1*      enzuiVirtualKeyboard       = nullptr;
         wl_seat*                              enzuiSeat                  = nullptr;
         gbm_bo*                               gbm       = nullptr;

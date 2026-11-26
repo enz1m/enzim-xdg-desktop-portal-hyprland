@@ -1,3 +1,4 @@
+#include "enzui-assistant-input-v1-client-protocol.h"
 #include "RemoteDesktop.hpp"
 #include "Screencopy.hpp"
 #include "../core/PortalManager.hpp"
@@ -165,7 +166,10 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
     auto* shared = screencopy->getSession(sessionHandle);
     if (std::get<0>(result) != 0 || !shared || !shared->session)
         return result;
-    m_sessions[sessionHandle] = SSession{.id = m_nextID++, .appID = appID};
+    m_sessions[sessionHandle] = SSession{
+        .id = m_nextID++, .appID = appID,
+        .assistantHandle = sessionHandle.substr(sessionHandle.rfind('/') + 1).starts_with("enzui_assistant_") ? std::string(sessionHandle) : std::string{},
+    };
     auto previous             = shared->session->onDestroy;
     const std::string handle  = sessionHandle;
     shared->session->onDestroy = [this, previous, handle]() {
@@ -202,6 +206,9 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
         return {1, {}};
     auto& session = it->second;
     auto* shared  = screencopy->getSession(sessionHandle);
+    const bool  sharing  = shared && shared->selection.type != TYPE_INVALID;
+    if (!session.assistantHandle.empty() && (sharing || session.requested != (DEVICE_POINTER | DEVICE_KEYBOARD)))
+        return {1, {}};
     const auto& restored = shared ? shared->restoredGrant : std::nullopt;
     if (session.requested && restored && (restored->devices & session.requested) == session.requested) {
         session.granted      = session.requested;
@@ -210,13 +217,13 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
         // Control is remembered only together with a screen the user chose to keep after a restart.
         const bool offerPersist = shared && shared->selection.persist && shared->persistMode == 2;
         bool       persist      = false;
-        session.granted         = askControl(session.appID, session.requested, offerPersist, persist) ? session.requested : 0;
+        session.granted         = askControl(session, sharing, offerPersist, persist) ? session.requested : 0;
         if (shared)
             shared->grantDevices = persist ? session.granted : 0;
     }
 
     std::unordered_map<std::string, sdbus::Variant> results;
-    if (shared && shared->selection.type != TYPE_INVALID) {
+    if (sharing) {
         auto [response, cast] = screencopy->onStart(requestHandle, sessionHandle, appID, parentWindow, opts);
         if (response != 0)
             return {response, {}};
@@ -227,9 +234,14 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
                 session.height = output->height;
             }
         }
-    } else if (!session.granted)
-        // Neither a screen nor control: nothing was allowed.
+    } else if (!session.granted) {
         return {1, {}};
+    } else if (session.granted & DEVICE_POINTER) {
+        // Without a screencast, an unbound virtual pointer maps to the desktop layout.
+        constexpr uint32_t DESKTOP_EXTENT = 10000;
+        session.width                     = DESKTOP_EXTENT;
+        session.height                    = DESKTOP_EXTENT;
+    }
     session.started    = true;
     results["devices"] = sdbus::Variant{session.granted};
     results["clipboard_enabled"] = sdbus::Variant{false};
@@ -242,13 +254,24 @@ sdbus::UnixFd CRemoteDesktopPortal::onConnectToEIS(sdbus::ObjectPath sessionHand
     if (it == m_sessions.end() || !it->second.started)
         throw failure("No started remote desktop session");
     auto& session = it->second;
-    if (session.eisContext)
-        throw failure("This session is already connected to EIS");
+    if (session.eisContext || session.assistantScope || session.assistantRevoked)
+        throw failure("This session is already connected to EIS or has been revoked");
+    if (!session.assistantHandle.empty() && !g_pPortalManager->m_sWaylandConnection.assistantInputGlobal)
+        throw failure("The compositor cannot scope Assistant input");
+    ensureDevices(sessionHandle, session);
+    if (((session.granted & DEVICE_POINTER) && !session.pointer) || ((session.granted & DEVICE_KEYBOARD) && !session.keyboard))
+        throw failure("Granted input devices are unavailable");
+    if (!session.assistantHandle.empty() && !scopeAssistant(session))
+        throw failure("The compositor refused the Assistant input session");
     if (m_epoll < 0)
         throw failure("EIS is unavailable");
     session.eisContext = eis_new(nullptr);
-    if (!session.eisContext || eis_setup_backend_fd(session.eisContext) != 0)
+    if (!session.eisContext || eis_setup_backend_fd(session.eisContext) != 0) {
+        if (session.eisContext)
+            eis_unref(session.eisContext);
+        session.eisContext = nullptr;
         throw failure("EIS is unavailable");
+    }
     const int fd = eis_backend_fd_add_client(session.eisContext);
     epoll_event watch{.events = EPOLLIN, .data = {.u64 = session.id}};
     if (fd < 0 || epoll_ctl(m_epoll, EPOLL_CTL_ADD, eis_get_fd(session.eisContext), &watch) != 0) {
@@ -262,16 +285,48 @@ sdbus::UnixFd CRemoteDesktopPortal::onConnectToEIS(sdbus::ObjectPath sessionHand
     return sdbus::UnixFd{fd, sdbus::adopt_fd};
 }
 
-bool CRemoteDesktopPortal::askControl(const std::string& appID, uint32_t devices, bool offerPersist, bool& persist) {
+bool CRemoteDesktopPortal::verifyAssistantSession(const std::string& handle) {
+    auto&          wl      = g_pPortalManager->m_sWaylandConnection;
+    constexpr auto VERSION = ENZUI_ASSISTANT_INPUT_V1_VERIFY_SESSION_SINCE_VERSION;
+    if (handle.empty() || wl.assistantInputVersion < VERSION)
+        return false;
+
+    auto* verification = static_cast<enzui_assistant_input_v1*>(
+        wl_registry_bind(reinterpret_cast<wl_registry*>(wl.registry->resource()), wl.assistantInputGlobal, &enzui_assistant_input_v1_interface, VERSION));
+    if (!verification)
+        return false;
+
+    static const enzui_assistant_input_v1_listener LISTENER = {
+        .attached         = nullptr,
+        .revoked          = nullptr,
+        .session_verified = [](void* data, enzui_assistant_input_v1*, uint32_t accepted) { *static_cast<bool*>(data) = accepted == 1; },
+    };
+    bool verified = false;
+    enzui_assistant_input_v1_add_listener(verification, &LISTENER, &verified);
+    enzui_assistant_input_v1_verify_session(verification, handle.c_str());
+    const auto result = wl_display_roundtrip(wl.display);
+    enzui_assistant_input_v1_destroy(verification);
+    return result >= 0 && verified;
+}
+
+bool CRemoteDesktopPortal::askControl(const SSession& session, bool sharing, bool offerPersist, bool& persist) {
     persist = false;
+    const bool  assistant = verifyAssistantSession(session.assistantHandle);
+    const auto& appID     = session.appID;
+    const auto  devices   = session.requested;
     try {
         auto proxy = sdbus::createProxy(*g_pPortalManager->getConnection(), sdbus::ServiceName{CONSENT_SERVICE}, sdbus::ObjectPath{"/org/freedesktop/portal/desktop"});
         const auto handle = sdbus::ObjectPath{std::format("/org/freedesktop/portal/desktop/request/enzui_remote/r{}", ++m_consentSerial)};
         const auto who    = appID.empty() ? std::string{"A remote desktop service"} : appID;
-        std::string what  = devices == (DEVICE_KEYBOARD | DEVICE_POINTER) ? "your keyboard and pointer" : devices == DEVICE_KEYBOARD ? "your keyboard" : "your pointer";
+        const auto        what     = devices == (DEVICE_KEYBOARD | DEVICE_POINTER) ? "your keyboard and pointer" : devices == DEVICE_KEYBOARD ? "your keyboard" : "your pointer";
+        const auto        title    = assistant ? "Allow the Assistant to control this computer?" : std::format("{} wants to control this computer", who);
+        const auto        subtitle = assistant ? "The Assistant in your current conversation will be able to use your keyboard and pointer." :
+                                                 std::format("It asks to use {}{}.", what, sharing ? " while the screen is shared" : "");
+        const std::string body     = assistant ? "A banner shows while it has control. Click it or press Super+Esc to stop." :
+                                                 "Allow it only if you trust whoever is connecting. Remote input is blocked while the screen is locked.";
         std::unordered_map<std::string, sdbus::Variant> options;
         options["grant_label"] = sdbus::Variant{std::string{"Allow control"}};
-        options["deny_label"]  = sdbus::Variant{std::string{"View only"}};
+        options["deny_label"]  = sdbus::Variant{std::string{assistant ? "Don't allow" : sharing ? "View only" : "Deny"}};
         using Choice = sdbus::Struct<std::string, std::string, std::vector<sdbus::Struct<std::string, std::string>>, std::string>;
         if (offerPersist)
             options["choices"] = sdbus::Variant{std::vector<Choice>{Choice{"persist", "Allow after restart", {}, "false"}}};
@@ -280,9 +335,7 @@ bool CRemoteDesktopPortal::askControl(const std::string& appID, uint32_t devices
         proxy->callMethod("AccessDialog")
             .onInterface("org.freedesktop.impl.portal.Access")
             .withTimeout(std::chrono::minutes(5))
-            .withArguments(handle, appID, std::string{}, std::format("{} wants to control this computer", who),
-                           std::format("It asks to use {} while the screen is shared.", what),
-                           std::string{"Allow it only if you trust whoever is connecting. Locking the screen ends control."}, options)
+            .withArguments(handle, appID, std::string{}, title, subtitle, body, options)
             .storeResultsTo(response, results);
         if (response != 0)
             return false;
@@ -299,7 +352,8 @@ bool CRemoteDesktopPortal::askControl(const std::string& appID, uint32_t devices
 
 CRemoteDesktopPortal::SSession* CRemoteDesktopPortal::active(const std::string& sessionHandle, uint32_t device) {
     const auto it = m_sessions.find(sessionHandle);
-    if (it == m_sessions.end() || !it->second.started || !(it->second.granted & device))
+    if (it == m_sessions.end() || !it->second.started || it->second.assistantRevoked ||
+        g_pPortalManager->m_sWaylandConnection.locked || !(it->second.granted & device))
         return nullptr;
     ensureDevices(sessionHandle, it->second);
     if ((device == DEVICE_POINTER && !it->second.pointer) || (device == DEVICE_KEYBOARD && !it->second.keyboard))
@@ -318,7 +372,7 @@ CRemoteDesktopPortal::SSession* CRemoteDesktopPortal::notifiable(const std::stri
     // A session's input comes either through Notify or through its EIS
     // connection, never both.
     const auto it = callerSession(sdbus::ObjectPath{sessionHandle});
-    if (it == m_sessions.end() || it->second.eisContext)
+    if (it == m_sessions.end() || it->second.eisContext || !it->second.assistantHandle.empty())
         return nullptr;
     return active(sessionHandle, device);
 }
@@ -357,7 +411,6 @@ void CRemoteDesktopPortal::keyboardKey(SSession& session, uint32_t keycode, uint
 }
 
 void CRemoteDesktopPortal::pointerAbsolute(SSession& session, double x, double y) {
-    // Only a shared output gives absolute coordinates a meaning.
     if (!session.width || !session.height)
         return;
     zwlr_virtual_pointer_v1_motion_absolute(session.pointer, now(), (uint32_t)std::clamp(x, 0.0, (double)session.width - 1),
@@ -443,6 +496,7 @@ void CRemoteDesktopPortal::eisEvent(const std::string& sessionHandle, SSession& 
         case EIS_EVENT_CLIENT_DISCONNECT:
             if (eis_event_get_client(event) == session.eisClient) {
                 eisClose(session);
+                releaseDevices(session);
                 if (session.eisClient) {
                     eis_client_unref(session.eisClient);
                     session.eisClient = nullptr;
@@ -571,6 +625,56 @@ void CRemoteDesktopPortal::eisClose(SSession& session) {
     }
 }
 
+bool CRemoteDesktopPortal::scopeAssistant(SSession& session) {
+    auto& wl = g_pPortalManager->m_sWaylandConnection;
+    session.assistantScope = static_cast<enzui_assistant_input_v1*>(
+        wl_registry_bind(reinterpret_cast<wl_registry*>(wl.registry->resource()), wl.assistantInputGlobal, &enzui_assistant_input_v1_interface, 1));
+    if (!session.assistantScope)
+        return false;
+
+    static const enzui_assistant_input_v1_listener LISTENER = {
+        .attached         = [](void* data, enzui_assistant_input_v1*, uint32_t accepted) { static_cast<SSession*>(data)->assistantAttached = accepted == 1; },
+        .revoked          = [](void* data, enzui_assistant_input_v1*) { g_pPortalManager->m_sPortals.remoteDesktop->revokeAssistant(*static_cast<SSession*>(data)); },
+        .session_verified = nullptr,
+    };
+    enzui_assistant_input_v1_add_listener(session.assistantScope, &LISTENER, &session);
+    enzui_assistant_input_v1_attach(session.assistantScope, session.assistantHandle.c_str(),
+                                   wl_proxy_get_id(reinterpret_cast<wl_proxy*>(session.pointer)), wl_proxy_get_id(reinterpret_cast<wl_proxy*>(session.keyboard)));
+    return wl_display_roundtrip(wl.display) >= 0 && session.assistantAttached && !session.assistantRevoked;
+}
+
+void CRemoteDesktopPortal::revokeAssistant(SSession& session) {
+    session.assistantRevoked = true;
+    sdbus::ObjectPath handle{session.assistantHandle};
+    auto* shared = g_pPortalManager->m_sPortals.screencopy->getSession(handle);
+    if (shared && shared->session)
+        closeDBusSession(*shared->session, true);
+}
+
+void CRemoteDesktopPortal::suspendInput() {
+    for (auto& [_, session] : m_sessions) {
+        if (session.assistantHandle.empty())
+            releaseDevices(session);
+    }
+}
+
+void CRemoteDesktopPortal::releaseDevices(SSession& session) {
+    if (session.pointer) {
+        zwlr_virtual_pointer_v1_destroy(session.pointer);
+        session.pointer = nullptr;
+    }
+    if (session.keyboard) {
+        zwp_virtual_keyboard_v1_destroy(session.keyboard);
+        session.keyboard = nullptr;
+    }
+    std::ranges::fill(session.modifiers, 0U);
+    if (session.state) {
+        xkb_state_unref(session.state);
+        session.state = nullptr;
+    }
+    flush();
+}
+
 void CRemoteDesktopPortal::forget(const std::string& sessionHandle) {
     const auto it = m_sessions.find(sessionHandle);
     if (it == m_sessions.end())
@@ -585,12 +689,9 @@ void CRemoteDesktopPortal::forget(const std::string& sessionHandle) {
         epoll_ctl(m_epoll, EPOLL_CTL_DEL, eis_get_fd(session.eisContext), nullptr);
         eis_unref(session.eisContext);
     }
-    if (session.pointer)
-        zwlr_virtual_pointer_v1_destroy(session.pointer);
-    if (session.keyboard)
-        zwp_virtual_keyboard_v1_destroy(session.keyboard);
-    if (session.state)
-        xkb_state_unref(session.state);
+    releaseDevices(session);
+    if (session.assistantScope)
+        enzui_assistant_input_v1_destroy(session.assistantScope);
     m_sessions.erase(it);
     flush();
 }

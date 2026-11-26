@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include "../dbusDefines.hpp"
 
+struct enzui_assistant_input_v1;
 struct zwlr_virtual_pointer_v1;
 struct zwp_virtual_keyboard_v1;
 struct xkb_context;
@@ -28,6 +29,7 @@ class CRemoteDesktopPortal {
 
     // Called once, after the core's own fds are in the event loop.
     void attachEventLoop();
+    void suspendInput();
 
     enum eDevices : uint32_t {
         DEVICE_KEYBOARD = 1,
@@ -38,6 +40,10 @@ class CRemoteDesktopPortal {
     struct SSession {
         uint64_t                 id = 0;
         std::string              appID;
+        std::string              assistantHandle;
+        enzui_assistant_input_v1* assistantScope = nullptr;
+        bool                     assistantAttached = false;
+        bool                     assistantRevoked = false;
         uint32_t                 requested = 0;
         uint32_t                 granted   = 0;
         bool                     started   = false;
@@ -67,9 +73,13 @@ class CRemoteDesktopPortal {
     std::unordered_map<std::string, SSession>::iterator callerSession(sdbus::ObjectPath sessionHandle);
     SSession* active(const std::string& sessionHandle, uint32_t device);
     SSession* notifiable(const std::string& sessionHandle, uint32_t device);
-    bool      askControl(const std::string& appID, uint32_t devices, bool offerPersist, bool& persist);
+    bool                                                verifyAssistantSession(const std::string& handle);
+    bool                                                askControl(const SSession& session, bool sharing, bool offerPersist, bool& persist);
     void      ensureDevices(const std::string& sessionHandle, SSession& session);
+    void                                                releaseDevices(SSession& session);
     void      forget(const std::string& sessionHandle);
+    bool      scopeAssistant(SSession& session);
+    void      revokeAssistant(SSession& session);
     void      keyboardKey(SSession& session, uint32_t keycode, uint32_t state);
     void      pointerAbsolute(SSession& session, double x, double y);
     void      axis(SSession& session, double dx, double dy, bool finish);

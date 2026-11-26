@@ -108,7 +108,7 @@ dbUasv CScreencopyPortal::onCreateSession(sdbus::ObjectPath requestHandle, sdbus
             m_pPipewire->destroyStream(PSESSION.get());
             Debug::log(LOG, "[screencopy] Stream destroyed");
         }
-        PSESSION->session.release();
+        PSESSION->session.reset();
         Debug::log(LOG, "[screencopy] Session destroyed");
 
         // deactivate toplevel so it doesn't listen and waste battery
